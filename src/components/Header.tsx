@@ -55,8 +55,10 @@ export const Header: React.FC<HeaderProps> = ({
   const [pullDistance, setPullDistance] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
   const hideTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const touchStartX = useRef(0);
   const touchStartY = useRef(0);
   const isPullingRef = useRef(false);
+  const isHorizontalGestureRef = useRef(false);
   const pullDistanceRef = useRef(0);
   const avatarImage = customAvatarUrl || user?.photoURL;
 
@@ -95,7 +97,7 @@ export const Header: React.FC<HeaderProps> = ({
     };
   }, [isSettingsOpen, startHideTimer]);
 
-  // Gesto consciente de puxar (Pull-to-Reveal) com feedback elástico e controle total
+  // Gesto consciente de puxar (Pull-to-Reveal) com trava direcional e zona morta
   useEffect(() => {
     // Computador: rodinha para cima no topo absoluto
     const handleWheel = (e: WheelEvent) => {
@@ -108,16 +110,28 @@ export const Header: React.FC<HeaderProps> = ({
     // Toque no celular: puxar para baixo conscientemente no topo
     const handleTouchStart = (e: TouchEvent) => {
       const currentScrollY = window.scrollY || document.documentElement.scrollTop || 0;
-      if (currentScrollY <= 4) {
-        touchStartY.current = e.touches[0]?.clientY || 0;
-        isPullingRef.current = true;
-      } else {
+      isHorizontalGestureRef.current = false;
+
+      // Se a página não estiver no topo absoluto, ignora
+      if (currentScrollY > 4) {
         isPullingRef.current = false;
+        return;
       }
+
+      // Se o toque começou dentro de um elemento com rolagem horizontal (carrosséis, abas, sliders)
+      const target = e.target as HTMLElement | null;
+      if (target && target.closest('.overflow-x-auto, [data-horizontal-scroll="true"], .no-scrollbar')) {
+        isPullingRef.current = false;
+        return;
+      }
+
+      touchStartX.current = e.touches[0]?.clientX || 0;
+      touchStartY.current = e.touches[0]?.clientY || 0;
+      isPullingRef.current = true;
     };
 
     const handleTouchMove = (e: TouchEvent) => {
-      if (!isPullingRef.current) return;
+      if (!isPullingRef.current || isHorizontalGestureRef.current) return;
       const currentScrollY = window.scrollY || document.documentElement.scrollTop || 0;
       if (currentScrollY > 6) {
         isPullingRef.current = false;
@@ -127,22 +141,37 @@ export const Header: React.FC<HeaderProps> = ({
         return;
       }
 
+      const currentX = e.touches[0]?.clientX || 0;
       const currentY = e.touches[0]?.clientY || 0;
+      const diffX = Math.abs(currentX - touchStartX.current);
       const diffY = currentY - touchStartY.current;
 
-      // Se está puxando para baixo
-      if (diffY > 0) {
+      // 1. TRAVA DIRECIONAL: Se o movimento for horizontal (scroll de abas/carrossel), trava o banner imediatamente
+      if (diffX > 8 && diffX >= Math.abs(diffY)) {
+        isHorizontalGestureRef.current = true;
+        isPullingRef.current = false;
+        pullDistanceRef.current = 0;
+        setPullDistance(0);
+        setIsDragging(false);
+        return;
+      }
+
+      // 2. ZONA MORTA (DEADZONE): Exige intenção clara para baixo (>28px) antes de mover qualquer pixel do banner
+      const DEADZONE = 28;
+      if (diffY > DEADZONE && diffY > diffX * 1.3) {
         // Se o banner já estiver escondido, previne o recarregamento nativo da página
-        if (!isVisible && diffY > 8 && e.cancelable) {
+        if (!isVisible && diffY > 34 && e.cancelable) {
           e.preventDefault();
         }
 
-        // Resistência elástica confortável
-        const cappedDistance = Math.min(diffY * 0.7, 96);
+        // Amortecimento suave e elástico apenas após vencer a zona morta
+        const effectivePull = (diffY - DEADZONE) * 0.7;
+        const cappedDistance = Math.min(effectivePull, 96);
         pullDistanceRef.current = cappedDistance;
         setPullDistance(cappedDistance);
         setIsDragging(true);
       } else {
+        // Dentro da zona morta ou subindo: o banner fica 100% imóvel
         pullDistanceRef.current = 0;
         setPullDistance(0);
         setIsDragging(false);
@@ -150,12 +179,13 @@ export const Header: React.FC<HeaderProps> = ({
     };
 
     const handleTouchEnd = () => {
-      if (!isPullingRef.current) return;
+      if (!isPullingRef.current && !isHorizontalGestureRef.current) return;
       isPullingRef.current = false;
+      isHorizontalGestureRef.current = false;
       setIsDragging(false);
 
-      // Limite confortável para abrir: ~45px
-      if (pullDistanceRef.current >= 45) {
+      // Limite confortável para abrir: ~42px de revelação do banner
+      if (pullDistanceRef.current >= 42) {
         showBanner();
       } else {
         // Se soltou antes de completar, recolhe suavemente de volta!
