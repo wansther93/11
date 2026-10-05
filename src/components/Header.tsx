@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   Tv, 
   Settings, 
@@ -51,11 +51,173 @@ export const Header: React.FC<HeaderProps> = ({
   otakuLevel,
 }) => {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isVisible, setIsVisible] = useState(true);
+  const [pullDistance, setPullDistance] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const hideTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const touchStartY = useRef(0);
+  const isPullingRef = useRef(false);
+  const pullDistanceRef = useRef(0);
   const avatarImage = customAvatarUrl || user?.photoURL;
+
+  // Iniciar ou reiniciar o timer de auto-hide de 4 segundos
+  const startHideTimer = useCallback(() => {
+    if (hideTimerRef.current) {
+      clearTimeout(hideTimerRef.current);
+    }
+    // Não esconde enquanto modal de ajustes estiver aberto
+    if (isSettingsOpen) return;
+
+    hideTimerRef.current = setTimeout(() => {
+      setIsVisible(false);
+      setPullDistance(0);
+    }, 4000);
+  }, [isSettingsOpen]);
+
+  // Mostrar o banner e reiniciar contagem regressiva de 4 segundos
+  const showBanner = useCallback(() => {
+    setIsVisible(true);
+    setPullDistance(0);
+    setIsDragging(false);
+    startHideTimer();
+  }, [startHideTimer]);
+
+  // Gerenciar timer quando modal abre ou fecha
+  useEffect(() => {
+    if (isSettingsOpen) {
+      if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+      setIsVisible(true);
+    } else {
+      startHideTimer();
+    }
+    return () => {
+      if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+    };
+  }, [isSettingsOpen, startHideTimer]);
+
+  // Gesto consciente de puxar (Pull-to-Reveal) com feedback elástico e controle total
+  useEffect(() => {
+    // Computador: rodinha para cima no topo absoluto
+    const handleWheel = (e: WheelEvent) => {
+      const currentScrollY = window.scrollY || document.documentElement.scrollTop || 0;
+      if (currentScrollY <= 2 && e.deltaY < -15) {
+        showBanner();
+      }
+    };
+
+    // Toque no celular: puxar para baixo conscientemente no topo
+    const handleTouchStart = (e: TouchEvent) => {
+      const currentScrollY = window.scrollY || document.documentElement.scrollTop || 0;
+      if (currentScrollY <= 4) {
+        touchStartY.current = e.touches[0]?.clientY || 0;
+        isPullingRef.current = true;
+      } else {
+        isPullingRef.current = false;
+      }
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (!isPullingRef.current) return;
+      const currentScrollY = window.scrollY || document.documentElement.scrollTop || 0;
+      if (currentScrollY > 6) {
+        isPullingRef.current = false;
+        pullDistanceRef.current = 0;
+        setPullDistance(0);
+        setIsDragging(false);
+        return;
+      }
+
+      const currentY = e.touches[0]?.clientY || 0;
+      const diffY = currentY - touchStartY.current;
+
+      // Se está puxando para baixo
+      if (diffY > 0) {
+        // Se o banner já estiver escondido, previne o recarregamento nativo da página
+        if (!isVisible && diffY > 8 && e.cancelable) {
+          e.preventDefault();
+        }
+
+        // Resistência elástica confortável
+        const cappedDistance = Math.min(diffY * 0.7, 96);
+        pullDistanceRef.current = cappedDistance;
+        setPullDistance(cappedDistance);
+        setIsDragging(true);
+      } else {
+        pullDistanceRef.current = 0;
+        setPullDistance(0);
+        setIsDragging(false);
+      }
+    };
+
+    const handleTouchEnd = () => {
+      if (!isPullingRef.current) return;
+      isPullingRef.current = false;
+      setIsDragging(false);
+
+      // Limite confortável para abrir: ~45px
+      if (pullDistanceRef.current >= 45) {
+        showBanner();
+      } else {
+        // Se soltou antes de completar, recolhe suavemente de volta!
+        setPullDistance(0);
+      }
+      pullDistanceRef.current = 0;
+    };
+
+    window.addEventListener('wheel', handleWheel, { passive: true });
+    window.addEventListener('touchstart', handleTouchStart, { passive: true });
+    window.addEventListener('touchmove', handleTouchMove, { passive: false });
+    window.addEventListener('touchend', handleTouchEnd, { passive: true });
+    window.addEventListener('touchcancel', handleTouchEnd, { passive: true });
+
+    return () => {
+      window.removeEventListener('wheel', handleWheel);
+      window.removeEventListener('touchstart', handleTouchStart);
+      window.removeEventListener('touchmove', handleTouchMove);
+      window.removeEventListener('touchend', handleTouchEnd);
+      window.removeEventListener('touchcancel', handleTouchEnd);
+    };
+  }, [isVisible, showBanner]);
+
+  const currentHeightStyle = isVisible
+    ? undefined
+    : pullDistance > 0
+    ? `${pullDistance}px`
+    : '0px';
+
+  const currentOpacityStyle = isVisible
+    ? 1
+    : pullDistance > 0
+    ? Math.min(1, pullDistance / 40)
+    : 0;
+
+  const currentTransformStyle = isVisible || pullDistance > 0
+    ? 'translateY(0)'
+    : 'translateY(-100%)';
 
   return (
     <>
-      <header className="w-full shadow-2xl bg-black select-none relative">
+      <header 
+        className={`w-full bg-black select-none relative overflow-hidden shadow-2xl z-20 ${
+          isVisible 
+            ? 'max-h-[120px] opacity-100 translate-y-0 pointer-events-auto' 
+            : pullDistance > 0
+            ? 'pointer-events-none'
+            : 'max-h-0 opacity-0 -translate-y-full pointer-events-none'
+        } ${isDragging ? '' : 'transition-all duration-400 ease-out'}`}
+        style={{
+          height: currentHeightStyle,
+          maxHeight: isVisible ? '120px' : currentHeightStyle,
+          opacity: currentOpacityStyle,
+          transform: currentTransformStyle,
+          transitionProperty: isDragging ? 'none' : 'max-height, height, opacity, transform',
+          transitionDuration: isDragging ? '0ms' : '400ms',
+          transitionTimingFunction: 'cubic-bezier(0.16, 1, 0.3, 1)',
+        }}
+        onMouseEnter={() => {
+          if (isVisible) showBanner();
+        }}
+      >
         {/* Banner Oficial em Alta Definição adaptado para Mobile e Desktop */}
         <div className="relative w-full h-[66px] sm:h-[78px] md:h-[90px] lg:h-[96px] flex items-center justify-between bg-black overflow-hidden">
           
